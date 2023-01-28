@@ -1,3 +1,4 @@
+import functools
 from enum import Enum
 # noinspection PyProtectedMember
 from typing import TypeVar, Annotated, _AnnotatedAlias
@@ -218,95 +219,79 @@ class Window:
                 cmds.setParent("..")
 
     @staticmethod
-    def create_int_slider_widget(*args) -> str: return Window.create_abstract_slider_widget(cmds.intSlider, *args)
+    def create_int_slider_widget(*args) -> str: return Window.create_abstract_slider_widget(cmds.intSlider, cmds.intField, *args)[0]
 
     @staticmethod
-    def create_float_slider_widget(*args) -> str: return Window.create_abstract_slider_widget(cmds.floatSlider, *args)
+    def create_float_slider_widget(*args) -> str:
+        root_element, text_field_element, slider_element = Window.create_abstract_slider_widget(cmds.floatSlider, cmds.floatField, *args)
+        cmds.floatField(text_field_element, edit=True, tze=False, value=args[1])
+        return root_element
 
     @staticmethod
-    def create_abstract_slider_widget(cmds_slider_func, bind, default, label, min_range, max_range, *_):
+    def create_abstract_slider_widget(cmds_slider_func, cmds_field_func, bind, default, label, min_range, max_range, *_):
         """ Create an abstract slider widget, this method is supposed to be used through create_float_slider and create_int_slider """
         def on_update(value, *_):
-            """ On Update event for when the widget change its value """
-            cmds.textField(text_field_element, edit=True, text=round(float(value), 2))  # update the text field element with the new info
+            cmds_field_func(text_field_element, edit=True, value=round(float(value), 2))  # update the text field element with the new info
             cmds_slider_func(slider_element, edit=True, value=round(float(value), 2))   # update the slider element with the new info
             setattr(*bind, value)  # overwrite the bound variable's value with the new value
 
-        # Create a new row layout element, then add the sub elements needed to create this widget
-        root_element = cmds.rowLayout(numberOfColumns=3, adjustableColumn3=3, columnWidth3=(75, 30, 30), columnAlign3=["right", "left", "right"], columnAttach3=["both", "both", "right"])
+        root_element = cmds.rowLayout(numberOfColumns=3, adjustableColumn3=3, columnWidth3=(75, 35, 30), columnAlign3=["right", "left", "right"], columnAttach3=["both", "both", "right"])
         cmds.text(label=f"{label}:", align="right", font="boldLabelFont")
-        text_field_element = cmds.textField(text=default, cc=on_update)
+        text_field_element = cmds_field_func(value=default, cc=on_update)
         slider_element = cmds_slider_func(value=default, min=min_range, max=max_range, cc=on_update, dc=on_update)
-
-        # return the default parent pointer to the parent of this widget then return the root element
         cmds.setParent("..")
-        return root_element
+        return root_element, text_field_element, slider_element
 
     @staticmethod
     def create_text_field_widget(bind, default, label, *_) -> str:
         """ Create a text field widget """
-        # Create a new row layout element, then add the sub elements needed to create this widget
         root_element = cmds.rowLayout(numberOfColumns=2, adjustableColumn2=2, columnWidth2=(75, 70), columnAlign2=["right", "left"], columnAttach2=["both", "right"])
         cmds.text(label=f"{label}:", align="right", font="boldLabelFont")
         cmds.textField(text=default, cc=lambda value, *_: setattr(*bind, value))
-
-        # return the default parent pointer to the parent of this widget then return the root element
         cmds.setParent("..")
         return root_element
 
     @staticmethod
     def create_toggle_widget(bind, default, label, *_) -> str:
         """ Create a toggle widget """
-        # Create a new row layout element, then add the sub elements needed to create this widget
         root_element = cmds.rowLayout(numberOfColumns=3, adjustableColumn3=3, columnWidth3=(75, 66, 53), columnAlign3=["right", "left", "right"], columnAttach3=["both", "both", "right"])
         cmds.text(label=f"{label}:", align="right", font="boldLabelFont")
         cmds.iconTextRadioCollection()
         cmds.iconTextRadioButton(st='textOnly', l='TRUE', hlc=Window.UI_GREEN, bgc=Window.UI_BGC, font="smallFixedWidthFont", fla=False, select=default, cc=lambda value, *_: setattr(*bind, value))
         cmds.iconTextRadioButton(st='textOnly', l='FALSE', hlc=Window.UI_RED, bgc=Window.UI_BGC, font="smallFixedWidthFont", fla=False, select=not default)
-
-        # return the default parent pointer to the parent of this widget then return the root element
         cmds.setParent("..")
         return root_element
 
     def arm_control_box_widget(self, print_message, show_icon, enable_tuning_panel):
         """ Creates a custom 'arm rigger widget' that serves as state machine and controls other widgets' features """
+        def state(message="", icon=""):
+            def inner(function):
+                def wrapper(*args, **kwargs):
+                    if message:
+                        print_message(message)
+                    if icon:
+                        show_icon(icon)
+                    cmds.setParent(root_element)
+                    children = cmds.columnLayout(root_element, query=True, childArray=True)
+                    if children:
+                        cmds.deleteUI(children)
+                    function(*args, **kwargs)
+                return wrapper
+            return inner
 
-        def state(function):
-            """ Decorator that imbues other methods with the cleanup processes needed to flush the widget out of elements and prepare it to be remade
-                All state method should be decorated by this, since they require the widget to be cleaned up before they can run """
-            def wrapper():
-                cmds.setParent(root_element)
-                children = cmds.columnLayout(root_element, query=True, childArray=True)
-                if children:
-                    cmds.deleteUI(children)
-                return function()
-            return wrapper
-
-        @state
+        # -------------------------------------------------------------STARTING STATE-------------------------------------------------------------------------------------
+        @state(" - Welcome!\n - Press the [Start Building Rig] button to start\n   building your arm rig.", "PxrPtexture.svg")
         def starting_state():
-            """ This state happens at the start of the tool """
             def on_kickstart_tool(*_):
                 enable_tuning_panel(False)
                 setup_loc_state()
                 self.bucket_tool_ref.create_locator()
 
-            print_message(" - Welcome!\n - Press the [Start Building Rig] button to start\n   building your arm rig.")
-            show_icon("PxrPtexture.svg")
             cmds.button(label="Start Building Rig", c=on_kickstart_tool, h=127, bgc=Window.UI_GREEN)
 
-        #@state
-        #def creating_loc_state():
-        #    def on_create_locator(*_):
-        #        self.bucket_tool_ref.create_locator()
-        #        setup_loc_state()
-
-        #    show_icon("breakTangent.png")
-        #    print_message(" - I have created some locators.\n - Please place them in the arm's joint positions.")
-        #    cmds.button(label="Create Locators", c=on_create_locator, h=127, bgc=Window.UI_GREEN)
-
-        @state
+        # ------------------------------------------------------------------SETUP LOC STATE--------------------------------------------------------------------------------
+        @state(" - I have created some locators.\n - Please move them in the arm's joint positions.\n   In order from the base to the end of the arm", "breakTangent.png")
         def setup_loc_state():
-            """ This state happens as the tool is requiring the user to set up locators"""
             def on_reset(*_):
                 self.bucket_tool_ref.reset_locator()
                 self.bucket_tool_ref.create_locator()
@@ -322,8 +307,6 @@ class Window:
                 enable_tuning_panel(True)
                 starting_state()
 
-            show_icon("breakTangent.png")
-            print_message(" - I have created some locators.\n - Please move them in the arm's joint positions.\n   In order from the base to the end of the arm")
             cmds.rowLayout(numberOfColumns=1)
             cmds.button(label="Accept", c=on_apply, w=129, h=63, bgc=Window.UI_GREEN)
             cmds.setParent("..")
@@ -331,10 +314,9 @@ class Window:
             cmds.button(label="Reset", c=on_reset,  w=64, h=62, bgc=Window.UI_RED)
             cmds.button(label="Cancel", c=on_cancel, w=63, h=62, bgc=Window.UI_BGC)
 
-        @state
+        # ---------------------------------------------------------SETUP IK STATE-------------------------------------------------------------------------------------------
+        @state(" - Select 2 Joints from the base to the end of the\n   arm in order to build an IK Control", "breakTangent.png")
         def setup_ik_state():
-            """ This state happens when the tool requires the user to set up the IKs"""
-
             def on_build_ik(*_):
                 self.bucket_tool_ref.create_ik_controllers()
 
@@ -342,13 +324,11 @@ class Window:
                 enable_tuning_panel(True)
                 starting_state()
 
-            show_icon("breakTangent.png")
-            print_message(" - Select 2 Joints from the base to the end of the\n   arm in order to build an IK Control")
             cmds.button(label="Build IK", c=on_build_ik, w=120, h=62, bgc=Window.UI_BLUE)
             cmds.separator()
             cmds.button(label="Finish", c=on_finish, w=120, h=62, bgc=Window.UI_GREEN)
 
-        # Build the widget's base layout, and run the first state, bounce the default parent back to this widget's parent and return the root element
+        # -----------------------------------------------------------------------------------------------------------------------------------------------------------------
         root_element = cmds.columnLayout(bgc=Window.UI_LIGHT_GRAY, columnAttach=('both', 0), adjustableColumn=True, )
         starting_state()
         cmds.setParent("..")
