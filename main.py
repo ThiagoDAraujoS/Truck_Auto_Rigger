@@ -5,18 +5,21 @@ from typing import TypeVar, Annotated, _AnnotatedAlias
 from maya import cmds, mel
 
 
-class Element(Enum): TOGGLE, TEXT_FIELD, SLIDER = 0, 1, 2
+class Element(Enum): TOGGLE, TEXT_FIELD, SLIDER, DROPDOWN = 0, 1, 2, 3
 
 
-def toggle(label, group = ""): return Annotated[bool, Element.TOGGLE, label, group]
+def toggle(label, group=""): return Annotated[bool, Element.TOGGLE, label, group]
 
 
-def text_field(label, group = ""): return Annotated[str, Element.TEXT_FIELD, label, group]
+def text_field(label, group=""): return Annotated[str, Element.TEXT_FIELD, label, group]
 
 
-def slider(label, group = "", min = 1.0, max = 10.0):
+def slider(label, group="", min=1.0, max=10.0):
     slider_type = TypeVar('slider_type')
     return Annotated[slider_type, Element.SLIDER, label, group, min, max]
+
+
+def dropdown(label, group="", *choices): return Annotated[str, Element.DROPDOWN, label, group, choices]
 
 
 class ArmRigBuilder:
@@ -34,10 +37,10 @@ class ArmRigBuilder:
     joint_radius: slider("Joint Radius", "Rig Setup Info", min=0.5, max=10.0)[float] = 3
     """ Joints' Size """
 
-    control_name: text_field("Control Name", "Control Setup Info") = "Ctrl_Arm"
+    control_name: text_field("Name", "Control Setup Info") = "Ctrl_Arm"
     """ The control's name """
 
-    control_scale: slider("Control Scale", "Control Setup Info", min=1, max=20)[float] = 5
+    control_scale: slider("Scale", "Control Setup Info", min=1, max=20)[float] = 5
     """ The control scale """
 
     locator_name: text_field("Locator Name", "Locator Handle Info") = "Arm_Locator"
@@ -46,7 +49,7 @@ class ArmRigBuilder:
     locator_scale: slider("Locator Scale", "Locator Handle Info")[float] = 3.0
     """ Locators' Size """
 
-    ctrl_of_choice = "Circle"
+    ctrl_of_choice: dropdown("Shape", "Control Setup Info", "Arrow", "FourDArrow", "TwoDArrow", "Plus", "Circle", "Square") = "Circle"
 
     def __init__(self) -> None:
         self.locator_group: str = ""
@@ -111,12 +114,12 @@ class ArmRigBuilder:
 
         self.control_builders[self.ctrl_of_choice].ctrlScale = self.control_scale
         self.control_builders[self.ctrl_of_choice].ctrlName = self.control_name
-        circle_control = self.control_builders[self.ctrl_of_choice].build()
+        controller = self.control_builders[self.ctrl_of_choice].build()
 
-        cmds.matchTransform(circle_control, ik_handle, pos=True, rot=True)
+        cmds.matchTransform(controller, ik_handle, pos=True, rot=True)
 
         cmds.FreezeTransformations()
-        cmds.parentConstraint(circle_control, ik_handle[0], mo=True)
+        cmds.parentConstraint(controller, ik_handle[0], mo=True)
 
 
 class MetadataFragment:
@@ -142,6 +145,8 @@ class MetadataFragment:
         yield self.default
         yield self.label
         yield from self.args
+
+    def __repr__(self): return f"This fragment relates to the field {self.bind[1]} of {self.bind[0]}"
 
     @staticmethod
     def extract_reflection(target: object) -> dict[str, list]:
@@ -201,18 +206,23 @@ class Window:
                 cmds.columnLayout(columnAttach=('both', 0), adjustableColumn=True)
 
             for data in fragments:                          # For each fragment
+                print(data.ui)
                 if data.ui == Element.TEXT_FIELD:               # If it's flagged as a TEXT_FIELD
-                    Window.create_text_field_widget(*data)                       # Build a text field widget
+                    Window.create_text_field_widget(*data)          # Build a text field widget
+
+                elif data.ui == Element.DROPDOWN:
+                    Window.create_dropdown_widget(*data)
 
                 elif data.ui == Element.SLIDER:                 # If it's flagged as a TEXT_FIELD
                     if data.type is int:                            # If its flagged type is INT
-                        Window.create_int_slider_widget(*data)                 # Build a INT slider widget
+                        Window.create_int_slider_widget(*data)          # Build a INT slider widget
 
                     elif data.type is float:                        # If its flagged type is FLOAT
-                        Window.create_float_slider_widget(*data)               # Build a FLOAT slider widget
+                        Window.create_float_slider_widget(*data)        # Build a FLOAT slider widget
 
                 elif data.ui == Element.TOGGLE:                 # If it's flagged as a TOGGLE
-                    Window.create_toggle_widget(*data)                     # Build a toggle widget
+                    Window.create_toggle_widget(*data)              # Build a toggle widget
+
             cmds.separator(style="in", h=3)
             if group_name:                                  # If this was a grouped fragment list
                 cmds.setParent("..")                            # Reset the parent
@@ -241,6 +251,18 @@ class Window:
         slider_element = cmds_slider_func(value=default, min=min_range, max=max_range, cc=on_update, dc=on_update)
         cmds.setParent("..")
         return root_element, text_field_element, slider_element
+
+    @staticmethod
+    def create_dropdown_widget(bind, default, label, choices, *_):
+        """ Create a dropdown selector widget """
+        root_element = cmds.rowLayout(numberOfColumns=2, adjustableColumn2=2, columnWidth2=(75, 70), columnAlign2=["right", "left"], columnAttach2=["both", "right"])
+        cmds.text(label=f"{label}:", align="right", font="boldLabelFont")
+        menu_element = cmds.optionMenu(changeCommand=lambda item, *_: setattr(*bind, item))
+        for name in choices:
+            cmds.menuItem(label=name)
+        cmds.optionMenu(menu_element, edit=True, value=default)
+        cmds.setParent("..")
+        return root_element
 
     @staticmethod
     def create_text_field_widget(bind, default, label, *_) -> str:
