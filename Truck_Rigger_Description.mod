@@ -1,0 +1,1 @@
++ MAYAVERSION:2023 PLATFORM:win64 LOCALE:en_US Truck_Rigger 0.1 ..\Truck_Rigger
