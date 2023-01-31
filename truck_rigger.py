@@ -2,6 +2,7 @@ import maya.api.OpenMaya as om
 import scripts.arm_rig_builder as arm_rig_builder
 import scripts.window as window_script
 
+
 def maya_useNewAPI(): pass
 
 
