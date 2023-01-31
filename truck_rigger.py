@@ -1,6 +1,10 @@
 import maya.api.OpenMaya as om
 import scripts.arm_rig_builder as arm_rig_builder
 import scripts.window as window_script
+import scripts.controller_importer as importer
+
+from maya import cmds
+import os.path
 
 
 def maya_useNewAPI(): pass
