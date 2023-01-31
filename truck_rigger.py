@@ -1,8 +1,9 @@
-import sys
 import maya.api.OpenMaya as om
-
+import scripts.arm_rig_builder as arm_rig_builder
+import scripts.window as window_script
 
 def maya_useNewAPI(): pass
+
 
 class TruckRigger(om.MPxCommand):
     kPluginCmdName = "truck_rigger"
@@ -15,7 +16,9 @@ class TruckRigger(om.MPxCommand):
         return TruckRigger()
 
     def doIt(self, args):
-        print("Do whatever to load the truck rigger tool")
+        tool = arm_rig_builder.ArmRigBuilder()
+        window = window_script.Window(tool)
+        window.open_window()
 
 
 def initializePlugin(plugin):
@@ -26,4 +29,3 @@ def initializePlugin(plugin):
 def uninitializePlugin(plugin):
     pluginFn = om.MFnPlugin(plugin)
     pluginFn.deregisterCommand(TruckRigger.kPluginCmdName)
-
