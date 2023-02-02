@@ -116,7 +116,7 @@ class Window:
 
     @staticmethod
     def assemble_abstract_tab(target_reference, control_box) -> tuple[str, str, str]:
-        """ This method build an abstract tab, it requires a control box method in order to become concrete, so far only arm_control_box_widget can be used as a valid control_box"""
+        """ This method build an abstract tab, it requires a control box method in order to become concrete, so far only arm_control_box_widget can be used as a valid control_box """
         main_element = cmds.formLayout(numberOfDivisions=8, h=Window.SIZE + 4)
 
         # draw tuning box

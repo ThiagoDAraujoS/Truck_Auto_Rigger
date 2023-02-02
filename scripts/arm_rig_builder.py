@@ -1,5 +1,6 @@
 from maya import cmds, mel
 from scripts.tuning_panel_widget import toggle, text_field, slider, dropdown
+from scripts.controller_importer import CtrlImporter, gear_specifications
 
 
 class ArmRigBuilder:
