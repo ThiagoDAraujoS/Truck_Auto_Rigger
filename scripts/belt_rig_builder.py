@@ -1,117 +1,70 @@
-from maya import cmds
+from maya import cmds, mel
 from maya.api.OpenMaya import MVector
 import math
 
 
-class BeltRigBuilder:
-    LOCATOR_GROUP_NAME: str = "belt_handles_group"
-    LOCATOR_SPACING: float = 50
-    LOCATOR_SIZE: float = 15
+class AbstractShape:
+    MINIMAL_SIZE = 0.001
 
     def __init__(self):
-        self.circle_count: int = 0
-        self.circles: list[Circle] = []
-        self.locators: list[str] = []
-        self.locator_group: str = ""
+        super(AbstractShape, self).__init__()
+        self.start: MVector = MVector.kZeroVector
+        self.end: MVector = MVector.kZeroVector
 
-    def generate_shapes(self):
-        self.locators = []
-        for i in range(self.circle_count):
-            self.locators.append(cmds.circle()[0])
-            cmds.move(*(MVector.kXaxisVector * i * BeltRigBuilder.LOCATOR_SPACING))
-            cmds.scale(BeltRigBuilder.LOCATOR_SIZE, BeltRigBuilder.LOCATOR_SIZE, 0.0)
-        self.locator_group = cmds.group(self.locators, name=BeltRigBuilder.LOCATOR_GROUP_NAME)
+    def is_legal(self): return (self.start - self.end).length() >= AbstractShape.MINIMAL_SIZE
 
-    def build_curve(self):
-        # Remove controls from the parent object
-        cmds.parent(self.locators, w=True, r=True)
+    def _trace_logic(self, name) -> str: raise Exception("Abstract Method 'trace_logic' from class 'Shape' was invoked directly")
 
-        # List containing all locators as circle objects
-        self.circles = [Circle(name=shape_name) for shape_name in self.locators]
-
-        # Initialize algorithm variables
-        # List containing all tangents
-        tangential_path = []
-
-        # Slice_curves, these curves are going to be used to slice the circles in order to build the arcs that connect the tangents
-        slice_curves: dict[Circle, SliceCurve] = {}  # {circle: SliceCurve(circle) for circle in self.circles}
-
-        # List containing all the unvisited nodes
-        unvisited_nodes = self.circles.copy()
-
-        starting_node = None
-        current_node = min(unvisited_nodes, key=lambda o: o.center.x)
-        guide_direction = MVector(0, 1, 0)
-
-        # While we're not back at the starting node
-        while starting_node != current_node:
-
-            # If this is the first iteration, set starting node as the next node
-            if not starting_node:
-                starting_node = current_node
-
-            # Find the external tangent from next_node to the segway_node
-            tangent, next_node = current_node.find_external_tangent_in_system(guide_direction, unvisited_nodes)
-
-            # Setup guide direction from tangent
-            guide_direction = tangent.direction
-
-            slice_curves.setdefault(current_node, SliceCurve(current_node)).extrapolate_end_point(tangent.normal)
-            slice_curves.setdefault(next_node, SliceCurve(next_node)).extrapolate_start_point(tangent.normal)
-
-            # remove the next node from the unvisited nodes list
-            unvisited_nodes.remove(next_node)
-
-            # Append the tangent to the tangential path list
-            tangential_path.append(tangent)
-
-            # set up current node to be this iteration next_node
-            current_node = next_node
-
-        for c, s in slice_curves.items():
-            s.build_slicer_curve()
-
-        for t in tangential_path:
-            t.build_tangent_line()
+    def trace_path(self, name) -> str:
+        if not self.is_legal():
+            return ""
+        return self._trace_logic(name)
 
 
-class SliceCurve:
-    EXTRAPOLATION_FACTOR: float = 1.001
-
+class Arc(AbstractShape):
     def __init__(self, circle_ref):
+        super(Arc, self).__init__()
         self.circle = circle_ref
-        self.start:  MVector = MVector.kZeroVector
-        self.end:    MVector = MVector.kZeroVector
 
-    def _extrapolate_direction(self, direction) -> MVector:
-        return (direction * (self.circle.radius * SliceCurve.EXTRAPOLATION_FACTOR)) + self.circle.center
+    def _extrapolate_direction(self, direction) -> MVector: return (direction * self.circle.radius) + self.circle.center
 
     def extrapolate_start_point(self, direction) -> None: self.start = self._extrapolate_direction(direction)
-    def extrapolate_end_point(self, direction)   -> None: self.end = self._extrapolate_direction(direction)
 
-    def build_slicer_curve(self):
-        return cmds.curve(p=[
-            self.start,
-            (self.circle.center + self.start) * 0.5,
-            self.circle.center,
-            (self.circle.center + self.end) * 0.5,
-            self.end])
+    def extrapolate_end_point(self, direction) -> None: self.end = self._extrapolate_direction(direction)
+
+    def _trace_logic(self, name: str):
+        curve = cmds.createNode("nurbsCurve", name=f"{name}Shape")
+        curve_transform = cmds.listRelatives(curve, parent=True)[0]
+        cmds.rename(curve_transform, name)
+        builder = cmds.createNode("makeTwoPointCircularArc", name="Arc_Builder")
+        cmds.connectAttr(f"{builder}.outputCurve", f"{curve}.create")
+        cmds.setAttr(f"{builder}.point1", *self.start)
+        cmds.setAttr(f"{builder}.point2", *self.end)
+        cmds.setAttr(f"{builder}.radius", self.circle.radius)
+        cmds.setAttr(f"{builder}.directionVector", 0, 0, -1)
+        cmds.delete(curve, constructionHistory=True)
+        return curve_transform
 
 
-class TangentLine:
+class TangentLine(AbstractShape):
     def __init__(self, circle_a, circle_b):
+        super(TangentLine, self).__init__()
+
         self.normal = circle_a.find_positive_external_tangent_normal(circle_b)
 
-        self.a = self.normal * circle_a.radius + circle_a.center
-        self.b = self.normal * circle_b.radius + circle_b.center
+        self.start = self.normal * circle_a.radius + circle_a.center
+        self.end = self.normal * circle_b.radius + circle_b.center
 
-        base = self.b - self.a
+        base = self.end - self.start
 
         self.direction = base.normal()
         self.length = base.length()
 
-    def build_tangent_line(self):
-        return cmds.curve(p=[(self.direction * (self.length * 0.25 * i)) + self.a for i in range(5)])
+    def __iter__(self):
+        """ Iterate over the points in the tangent line """
+        yield from [(self.direction * (self.length * 0.25 * i)) + self.start for i in range(5)]
+
+    def _trace_logic(self, name: str): return cmds.curve(name=name, p=[*self])
 
 
 class Circle:
@@ -193,11 +146,106 @@ class Circle:
 
         return ((pos if is_forward else neg) - main_circle.center).normal()
 
-    def build_widget(self, name=""):
+    def build_widget(self, name="") -> str:
         if name:
             self.name = cmds.circle(c=self.center, r=self.radius, nr=(0, 0, 1), name=name)
         else:
             self.name = cmds.circle(c=self.center, r=self.radius, nr=(0, 0, 1))
+        return self.name
+
+
+class BeltPathPart:
+    """ Simple struct containing necessary curve path elements to build a curve piece """
+    def __init__(self, circle):
+        self.circle = circle
+        self.arc: Arc = Arc(circle)
+        # noinspection PyTypeChecker
+        self.tangent: TangentLine = None
+
+    def __iter__(self):
+        yield self.arc
+        yield self.tangent
+
+
+class BeltRigBuilder:
+    LOCATOR_GROUP_NAME: str = "belt_handles_group"
+    LOCATOR_SPACING: float = 50
+    LOCATOR_SIZE: float = 15
+
+    def __init__(self):
+        self.circle_count: int = 0
+        self.circles: list[Circle] = []
+        self.locators: list[str] = []
+        self.locator_group: str = ""
+        self.curve_centroid: MVector = MVector.kZeroVector
+
+    def generate_shapes(self):
+        self.locators = []
+        for i in range(self.circle_count):
+            self.locators.append(cmds.circle()[0])
+            cmds.move(*(MVector.kXaxisVector * i * BeltRigBuilder.LOCATOR_SPACING))
+            cmds.scale(BeltRigBuilder.LOCATOR_SIZE, BeltRigBuilder.LOCATOR_SIZE, 0.0)
+        self.locator_group = cmds.group(self.locators, name=BeltRigBuilder.LOCATOR_GROUP_NAME)
+
+    def build_belt_path(self) -> list[BeltPathPart]:
+        # This function aims to return a data structure containing the information required to build the belt curve
+        path: list[BeltPathPart] = []
+
+        # Remove controls from the parent object
+        cmds.parent(self.locators, w=True, r=True)
+
+        # List containing all locators as circle objects
+        self.circles = [Circle(name=shape_name) for shape_name in self.locators]
+
+        starting_node = None
+        current_node = min(self.circles, key=lambda o: o.center.x)
+        guide_direction = MVector(0, 1, 0)
+
+        path.append(BeltPathPart(current_node))
+
+        # While we're not back at the starting node
+        while starting_node != current_node:
+
+            # If this is the first iteration, set starting node as the next node
+            if not starting_node:
+                starting_node = current_node
+
+            # Find the external tangent from next_node to the segway_node
+            tangent, next_node = current_node.find_external_tangent_in_system(guide_direction, self.circles)
+
+            # Setup guide direction from tangent
+            guide_direction = tangent.direction
+
+            path[-1].arc.extrapolate_end_point(tangent.normal)
+            path[-1].tangent = tangent
+
+            path.append(BeltPathPart(next_node))
+            path[-1].arc.extrapolate_start_point(tangent.normal)
+
+            # set up current node to be this iteration next_node
+            current_node = next_node
+
+        # Wrap the belt's last node back to the first one
+        path[0].arc.start = path.pop().arc.start
+
+        # return the controls back to the parent
+        cmds.parent(self.locators, self.locator_group, r=True)
+
+        return path
+
+    def trace_curve(self, full_path: list[BeltPathPart]):
+        shapes = []
+        for i, path in enumerate(full_path):
+            for j, sub_path in enumerate(path):
+                new_curve = sub_path.trace_path(f"part_{i * 2 + j}")
+                if new_curve:
+                    shapes.append(new_curve)
+        cmds.attachCurve(*shapes)
+        print(shapes)
+
+    def build_curve(self):
+        path = self.build_belt_path()
+        self.trace_curve(path)
 
 
 tool = BeltRigBuilder()
