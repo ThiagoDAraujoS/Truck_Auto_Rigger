@@ -154,17 +154,94 @@ class Circle:
         return self.name
 
 
-class BeltPathPart:
-    """ Simple struct containing necessary curve path elements to build a curve piece """
-    def __init__(self, circle):
-        self.circle = circle
-        self.arc: Arc = Arc(circle)
-        # noinspection PyTypeChecker
-        self.tangent: TangentLine = None
+class BeltCurve:
 
-    def __iter__(self):
-        yield self.arc
-        yield self.tangent
+    _BELT_CURVE_NAME: str = "Belt_Curve"
+
+    class _Part:
+        """ Simple struct containing an arch curve and a tangent curve """
+        def __init__(self, circle):
+            self.circle = circle
+            self.arc: Arc = Arc(circle)
+            # noinspection PyTypeChecker
+            self.tangent: TangentLine = None
+
+        def __iter__(self):
+            yield self.arc
+            yield self.tangent
+
+    def __init__(self, locator_group):
+        # Copy the locator group used to build this object
+        locator_group = cmds.duplicate(locator_group, rc=True)[0]
+
+        # Get its children
+        locators = cmds.listRelatives(locator_group)
+
+        # Un-parent them
+        cmds.parent(locators, w=True, r=True)
+
+        # Build a list of virtual circles based on the locators
+        circles = [Circle(name=shape_name) for shape_name in locators]
+
+        # Process the circle list into a list of path parts
+        path_parts = self._build_belt_path(circles)
+
+        # Process the path_parts into a curve object and save its name
+        self.name = self._trace_curve(path_parts)
+
+        # delete the locators and group
+        cmds.delete(*locators)
+        cmds.delete(locator_group)
+
+    def _build_belt_path(self, circles) -> list[_Part]:
+        """This function aims to build a list of curve parts, containing the pieces required to build the belt curve"""
+        path: list[BeltCurve._Part] = []
+
+        starting_node = None
+        current_node = min(circles, key=lambda o: o.center.x)
+        guide_direction = MVector(0, 1, 0)
+
+        path.append(BeltCurve._Part(current_node))
+
+        # While we're not back at the starting node
+        while starting_node != current_node:
+
+            # If this is the first iteration, set starting node as the next node
+            if not starting_node:
+                starting_node = current_node
+
+            # Find the external tangent from current_node to the next_node
+            tangent, next_node = current_node.find_external_tangent_in_system(guide_direction, circles)
+
+            # Setup guide direction from tangent
+            guide_direction = tangent.direction
+
+            path[-1].arc.extrapolate_end_point(tangent.normal)
+            path[-1].tangent = tangent
+
+            path.append(BeltCurve._Part(next_node))
+            path[-1].arc.extrapolate_start_point(tangent.normal)
+
+            # set up current node to be this iteration next_node
+            current_node = next_node
+
+        # Wrap the belt's last node back to the first one
+        path[0].arc.start = path.pop().arc.start
+
+        return path
+
+    def _trace_curve(self, full_path: list[_Part]) -> str:
+        shapes = []
+        for i, path in enumerate(full_path):
+            for j, sub_path in enumerate(path):
+                new_curve = sub_path.trace_path(f"part_{i * 2 + j}")
+                if new_curve:
+                    shapes.append(new_curve)
+        cmds.attachCurve(*shapes)
+        result = shapes.pop(0)
+        cmds.delete(*shapes)
+        cmds.rename(result, BeltCurve._BELT_CURVE_NAME)
+        return result
 
 
 class BeltRigBuilder:
@@ -187,67 +264,8 @@ class BeltRigBuilder:
             cmds.scale(BeltRigBuilder.LOCATOR_SIZE, BeltRigBuilder.LOCATOR_SIZE, 0.0)
         self.locator_group = cmds.group(self.locators, name=BeltRigBuilder.LOCATOR_GROUP_NAME)
 
-    def build_belt_path(self) -> list[BeltPathPart]:
-        # This function aims to return a data structure containing the information required to build the belt curve
-        path: list[BeltPathPart] = []
-
-        # Remove controls from the parent object
-        cmds.parent(self.locators, w=True, r=True)
-
-        # List containing all locators as circle objects
-        self.circles = [Circle(name=shape_name) for shape_name in self.locators]
-
-        starting_node = None
-        current_node = min(self.circles, key=lambda o: o.center.x)
-        guide_direction = MVector(0, 1, 0)
-
-        path.append(BeltPathPart(current_node))
-
-        # While we're not back at the starting node
-        while starting_node != current_node:
-
-            # If this is the first iteration, set starting node as the next node
-            if not starting_node:
-                starting_node = current_node
-
-            # Find the external tangent from next_node to the segway_node
-            tangent, next_node = current_node.find_external_tangent_in_system(guide_direction, self.circles)
-
-            # Setup guide direction from tangent
-            guide_direction = tangent.direction
-
-            path[-1].arc.extrapolate_end_point(tangent.normal)
-            path[-1].tangent = tangent
-
-            path.append(BeltPathPart(next_node))
-            path[-1].arc.extrapolate_start_point(tangent.normal)
-
-            # set up current node to be this iteration next_node
-            current_node = next_node
-
-        # Wrap the belt's last node back to the first one
-        path[0].arc.start = path.pop().arc.start
-
-        # return the controls back to the parent
-        cmds.parent(self.locators, self.locator_group, r=True)
-
-        return path
-
-    def trace_curve(self, full_path: list[BeltPathPart]):
-        shapes = []
-        for i, path in enumerate(full_path):
-            for j, sub_path in enumerate(path):
-                new_curve = sub_path.trace_path(f"part_{i * 2 + j}")
-                if new_curve:
-                    shapes.append(new_curve)
-        cmds.attachCurve(*shapes)
-        print(shapes)
-
-    def build_curve(self):
-        path = self.build_belt_path()
-        self.trace_curve(path)
-
 
 tool = BeltRigBuilder()
 tool.circle_count = 5
 tool.generate_shapes()
+BeltCurve(tool.locator_group)
