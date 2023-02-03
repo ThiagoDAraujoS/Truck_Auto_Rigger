@@ -1,6 +1,7 @@
-from maya import cmds, mel
+from maya import cmds
 from maya.api.OpenMaya import MVector
 import math
+import MASH.api as mapi
 
 
 class AbstractShape:
@@ -170,12 +171,12 @@ class BeltCurve:
             yield self.arc
             yield self.tangent
 
-    def __init__(self, locator_group):
+    def __init__(self, locator_group, name: str = ""):
         # Copy the locator group used to build this object
         locator_group = cmds.duplicate(locator_group, rc=True)[0]
 
         # Get its children
-        locators = cmds.listRelatives(locator_group)
+        locators = cmds.listRelatives(locator_group, c=True, type="transform")
 
         # Un-parent them
         cmds.parent(locators, w=True, r=True)
@@ -187,7 +188,7 @@ class BeltCurve:
         path_parts = self._build_belt_path(circles)
 
         # Process the path_parts into a curve object and save its name
-        self.name = self._trace_curve(path_parts)
+        self.name = self._trace_curve(path_parts, name)
 
         # delete the locators and group
         cmds.delete(*locators)
@@ -230,7 +231,7 @@ class BeltCurve:
 
         return path
 
-    def _trace_curve(self, full_path: list[_Part]) -> str:
+    def _trace_curve(self, full_path: list[_Part], name: str) -> str:
         shapes = []
         for i, path in enumerate(full_path):
             for j, sub_path in enumerate(path):
@@ -239,33 +240,135 @@ class BeltCurve:
                     shapes.append(new_curve)
         cmds.attachCurve(*shapes)
         result = shapes.pop(0)
+        cmds.delete(result, constructionHistory=True)
         cmds.delete(*shapes)
-        cmds.rename(result, BeltCurve._BELT_CURVE_NAME)
-        return result
+        name = name if name else BeltCurve._BELT_CURVE_NAME
+        cmds.rename(result, name)
+        return name
 
 
 class BeltRigBuilder:
-    LOCATOR_GROUP_NAME: str = "belt_handles_group"
-    LOCATOR_SPACING: float = 50
-    LOCATOR_SIZE: float = 15
+    CORE_CTRL_SIZE: float = 20
+    CORE_CTRL_NAME: str = "Belt_Core_Ctrl"
+
+    CIRCLE_CTRL_SPACING: float = 50
+    CIRCLE_CTRL_SIZE: float = 15
+    CIRCLE_CTRL_LOCK_BLUEPRINT: list[str] = "rotate", "translateZ", "scaleZ", "visibility",
+    CIRCLE_CTRL_NAME: str = "Belt_Circle_Ctrl"
+
+    FRAME_CTRL_NAME: str = "Belt_Frame_Ctrl"
+    FRAME_CTRL_SIZE: float = 80.0
+    FRAME_CTRL_LOCK_BLUEPRINT: list[str] = "scale", "rotate", "translate"
+
+    THREAD_JOINT_NAME_PREFIX: str = "Belt_Thread"
+    MASTER_JOINT_NAME_PREFIX: str = "Belt_Master"
+    JOINT_NAME_SUFFIX: str = "Joint"
+
+    MASH_NETWORK_NAME: str = "MASH_Belt_Thread_Driver"
+    MASH_BREAKOUT_CONNECTION_BLUEPRINT: list[tuple[str, str]] = [(".outputs[{i}].translate", ".translate")]#, "outputs[{i}].rotate"
 
     def __init__(self):
-        self.circle_count: int = 0
-        self.circles: list[Circle] = []
-        self.locators: list[str] = []
-        self.locator_group: str = ""
-        self.curve_centroid: MVector = MVector.kZeroVector
+        self.core_ctrl: str = ""
+        self.tread_count: int = 30
+        self.circle_ctrl_count: int = 0
+        self.circle_controls: list[str] = []
+        self.frame_ctrl: str = ""
+        # noinspection PyTypeChecker
+        self.belt_curve: BeltCurve = None
+        self.master_joint: str = ""
+        self.tread_joints: list[str] = []
+        self.animation_speed = 3.0
 
-    def generate_shapes(self):
-        self.locators = []
-        for i in range(self.circle_count):
-            self.locators.append(cmds.circle()[0])
-            cmds.move(*(MVector.kXaxisVector * i * BeltRigBuilder.LOCATOR_SPACING))
-            cmds.scale(BeltRigBuilder.LOCATOR_SIZE, BeltRigBuilder.LOCATOR_SIZE, 0.0)
-        self.locator_group = cmds.group(self.locators, name=BeltRigBuilder.LOCATOR_GROUP_NAME)
+    def start_building_frame_ctrl(self):
+        """ Builds a square frame used as base screen for drawing the belt's controls """
+        self.frame_ctrl = cmds.polyPlane(name=BeltRigBuilder.FRAME_CTRL_NAME, h=BeltRigBuilder.FRAME_CTRL_SIZE,
+            w=BeltRigBuilder.FRAME_CTRL_SIZE, sh=1, sw=1, sx=1, sy=1, ax=MVector.kZaxisVector)[0]
+        cmds.setAttr(f"{self.frame_ctrl}.overrideEnabled", 1)
+        cmds.setAttr(f"{self.frame_ctrl}.overrideShading", 0)
+
+        self.core_ctrl = cmds.polyCube(name=BeltRigBuilder.CORE_CTRL_NAME, h=BeltRigBuilder.CORE_CTRL_SIZE, w=BeltRigBuilder.CORE_CTRL_SIZE, d=BeltRigBuilder.CORE_CTRL_SIZE)[0]
+        cmds.setAttr(f"{self.core_ctrl}.overrideEnabled", 1)
+        cmds.setAttr(f"{self.core_ctrl}.overrideShading", 0)
+
+    def finish_building_frame(self):
+        cmds.makeIdentity(self.frame_ctrl, apply=True, s=1, n=0)
+        for attribute in BeltRigBuilder.FRAME_CTRL_LOCK_BLUEPRINT:
+            cmds.setAttr(f"{self.frame_ctrl}.{attribute}", lock=True)
+        #cmds.setAttr(f"{self.frame_ctrl}.template", 1)
+
+    def build_circle_ctrl(self):
+        ctrl = cmds.circle(name=BeltRigBuilder.CIRCLE_CTRL_NAME)[0]
+        cmds.scale(BeltRigBuilder.CIRCLE_CTRL_SIZE, BeltRigBuilder.CIRCLE_CTRL_SIZE, 0.0)
+        for attribute in BeltRigBuilder.CIRCLE_CTRL_LOCK_BLUEPRINT:
+            cmds.setAttr(f"{ctrl}.{attribute}", lock=True)
+        return ctrl
+
+    def generate_circle_ctrl_list(self):
+        self.circle_controls = []
+        for i in range(self.circle_ctrl_count):
+            ctrl = self.build_circle_ctrl()
+            cmds.move(*(MVector.kXaxisVector * i * BeltRigBuilder.CIRCLE_CTRL_SPACING))
+            self.circle_controls.append(ctrl)
+        cmds.parent(*self.circle_controls, self.frame_ctrl, r=True)
+
+    def build_belt_curve(self): self.belt_curve = BeltCurve(self.frame_ctrl)
+
+    def clear_circle_ctrls(self):
+        cmds.parent(self.belt_curve.name, self.frame_ctrl, r=True)
+        #cmds.parent(self.belt_curve.name, w=True)
+        #cmds.delete(self.frame_ctrl)
+
+    def create_tread_joints(self):
+        position = cmds.getAttr(f"{self.core_ctrl}.translate")[0]
+        self.master_joint = cmds.joint(name=f"{BeltRigBuilder.MASTER_JOINT_NAME_PREFIX}_{BeltRigBuilder.JOINT_NAME_SUFFIX}", p=position)
+
+        self.tread_joints = []
+        for i in range(self.tread_count):
+            cmds.select(clear=True)
+            joint_name = f"{BeltRigBuilder.THREAD_JOINT_NAME_PREFIX}_{i}_{BeltRigBuilder.JOINT_NAME_SUFFIX}"
+            self.tread_joints.append(cmds.joint(name=joint_name))
+            cmds.parent(self.tread_joints[i], self.master_joint)
+            cmds.setAttr(f"{joint_name}.inheritsTransform", 0)
+
+    # noinspection PyRedundantParentheses
+    def build_mash_driver(self):
+        cmds.select(clear=True)
+        mash_network = mapi.Network()
+        mash_network.createNetwork(name=BeltRigBuilder.MASH_NETWORK_NAME)
+        mash_network.setPointCount(self.tread_count)
+
+        distribute_node_name = ""
+        for node_name in mash_network.getAllNodesInNetwork():
+            if "Distribute" in node_name:
+                distribute_node_name = node_name
+                break
+
+        cmds.setAttr(f"{distribute_node_name}.amplitudeX", 0)
+
+        curve_node = mash_network.addNode("MASH_Curve")
+        cmds.connectAttr(f"{self.belt_curve.name}.worldSpace[0]", f"{curve_node.name}.inCurves[0]", force=1)
+        cmds.setAttr(f"{curve_node.name}.timeStep", 1)
+        cmds.setAttr(f"{curve_node.name}.timeSlide", -self.animation_speed)
+
+        breakout_node = mash_network.addNode("MASH_Breakout")
+        self.create_tread_joints()
+        for i, joint in enumerate(self.tread_joints):
+            for connection_a, connection_b in BeltRigBuilder.MASH_BREAKOUT_CONNECTION_BLUEPRINT:
+                cmds.connectAttr((f"{breakout_node.name}{connection_a}").format(i=i), f"{joint}{connection_b}")
+
+    def finish(self):
+        cmds.parent(self.master_joint, self.belt_curve.name, self.frame_ctrl, r=True)
 
 
 tool = BeltRigBuilder()
-tool.circle_count = 5
-tool.generate_shapes()
-BeltCurve(tool.locator_group)
+
+tool.start_building_frame_ctrl()
+tool.finish_building_frame()
+
+tool.circle_ctrl_count = 5
+
+tool.generate_circle_ctrl_list()
+tool.build_belt_curve()
+tool.clear_circle_ctrls()
+
+tool.build_mash_driver()
