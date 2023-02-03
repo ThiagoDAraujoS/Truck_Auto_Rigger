@@ -12,9 +12,10 @@ class Window:
     UI_BLUE = 0.1, 0.3, 0.5
     SIZE = 350
 
-    def __init__(self, arm_rigging_tool_ref):
+    def __init__(self, arm_rigging_tool_ref, belt_rigging_tool_ref):
         # Get a reference to the arm rigging tool
         self.bucket_tool_ref = arm_rigging_tool_ref
+        self.belt_tool_ref = belt_rigging_tool_ref
 
     def open_window(self) -> None:
         """ Open the window """
@@ -31,13 +32,101 @@ class Window:
 
         # Build the first Tab "Bucket tool"
         bucket_tab_element = self.assemble_abstract_tab(self.bucket_tool_ref, self.arm_control_box_widget)
+        belt_tab_element = self.assemble_abstract_tab(self.belt_tool_ref, self.belt_control_box_widget)
 
         # Attach tabs to the tab element
-        cmds.tabLayout(tabs_element, edit=True, tabLabel=(bucket_tab_element, 'Bucket'))
+        cmds.tabLayout(tabs_element, edit=True, tabLabel=((bucket_tab_element, 'Bucket'), (belt_tab_element, "Belt")))
 
         # Show the window
         cmds.showWindow(window_element)
         return window_element
+
+    def belt_control_box_widget(self, print_message, show_icon, enable_tuning_panel):
+        """ Creates a custom 'arm rigger widget' that serves as state machine and controls other widgets' features """
+
+        def state(message="", icon=""):
+            def inner(function):
+                def wrapper(*args, **kwargs):
+                    if message:
+                        print_message(message)
+                    if icon:
+                        show_icon(icon)
+                    cmds.setParent(root_element)
+                    children = cmds.columnLayout(root_element, query=True, childArray=True)
+                    if children:
+                        cmds.deleteUI(children)
+                    function(*args, **kwargs)
+
+                return wrapper
+
+            return inner
+
+        # -------------------------------------------------------------STARTING STATE-------------------------------------------------------------------------------------
+        @state(" - Welcome!\n - Press the [Start Building Rig] button to start\n   building your belt rig.", "PxrPtexture.svg")
+        def starting_state():
+            def on_kickstart_tool(*_):
+                enable_tuning_panel(False)
+                position_frame_state()
+                self.belt_tool_ref.build_core_ctrl()
+
+            cmds.button(label="Start Building Rig", c=on_kickstart_tool, h=127, bgc=Window.UI_GREEN)
+
+        # ------------------------------------------------------------------SETUP LOC STATE--------------------------------------------------------------------------------
+        @state(" - I have created a frame.\n - Please place it on top of the model's wheels/gears.\n", "breakTangent.png")
+        def position_frame_state():
+            def on_reset(*_):
+                self.belt_tool_ref.destroy_core_ctrl()
+                self.belt_tool_ref.build_core_ctrl()
+                position_frame_state()
+
+            def on_apply(*_):
+                self.belt_tool_ref.lock_frame_ctrl()
+                self.belt_tool_ref.build_circle_ctrls()
+                position_wheels_state()
+
+            def on_back(*_):
+                self.belt_tool_ref.destroy_core_ctrl()
+                enable_tuning_panel(True)
+                starting_state()
+
+            cmds.rowLayout(numberOfColumns=1)
+            cmds.button(label="Accept", c=on_apply, w=129, h=63, bgc=Window.UI_GREEN)
+            cmds.setParent("..")
+            cmds.rowLayout(numberOfColumns=2, columnAlign2=["right", "left"], co2=[-1, -1])
+            cmds.button(label="Reset", c=on_reset, w=64, h=62, bgc=Window.UI_RED)
+            cmds.button(label="Back", c=on_back, w=63, h=62, bgc=Window.UI_BGC)
+
+        # ---------------------------------------------------------SETUP IK STATE-------------------------------------------------------------------------------------------
+        @state(" - Spread these circles on top of each wheel", "breakTangent.png")
+        def position_wheels_state():
+            def on_reset(*_):
+                self.belt_tool_ref.destroy_circle_ctrls()
+                self.belt_tool_ref.build_circle_ctrls()
+                position_wheels_state()
+
+            def on_apply(*_):
+                self.belt_tool_ref.build_belt_ctrl()
+                self.belt_tool_ref.build_mash_driver()
+                enable_tuning_panel(True)
+                starting_state()
+
+            def on_back(*_):
+                self.belt_tool_ref.destroy_circle_ctrls()
+                self.belt_tool_ref.unlock_frame_ctrl()
+                position_frame_state()
+
+            cmds.rowLayout(numberOfColumns=1)
+            cmds.button(label="Accept", c=on_apply, w=129, h=63, bgc=Window.UI_GREEN)
+            cmds.setParent("..")
+            cmds.rowLayout(numberOfColumns=2, columnAlign2=["right", "left"], co2=[-1, -1])
+            cmds.button(label="Reset", c=on_reset, w=64, h=62, bgc=Window.UI_RED)
+            cmds.button(label="Back", c=on_back, w=63, h=62, bgc=Window.UI_BGC)
+
+        # -----------------------------------------------------------------------------------------------------------------------------------------------------------------
+        root_element = cmds.columnLayout(bgc=Window.UI_LIGHT_GRAY, columnAttach=('both', 0), adjustableColumn=True, )
+        starting_state()
+        cmds.setParent("..")
+        return root_element
 
     def arm_control_box_widget(self, print_message, show_icon, enable_tuning_panel):
         """ Creates a custom 'arm rigger widget' that serves as state machine and controls other widgets' features """
