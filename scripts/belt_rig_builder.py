@@ -34,46 +34,45 @@ class BeltRigBuilder:
         tangential_path = []
 
         # Slice_curves, these curves are going to be used to slice the circles in order to build the arcs that connect the tangents
-        slice_curves:dict[Circle, SliceCurve] = {circle: SliceCurve(circle) for circle in self.circles}
+        slice_curves: dict[Circle, SliceCurve] = {}  # {circle: SliceCurve(circle) for circle in self.circles}
 
         # List containing all the unvisited nodes
         unvisited_nodes = self.circles.copy()
 
         starting_node = None
-        next_node = min(unvisited_nodes, key=lambda o: o.center.x)
+        current_node = min(unvisited_nodes, key=lambda o: o.center.x)
         guide_direction = MVector(0, 1, 0)
 
         # While we're not back at the starting node
-        while starting_node != next_node:
+        while starting_node != current_node:
 
             # If this is the first iteration, set starting node as the next node
             if not starting_node:
-                starting_node = next_node
+                starting_node = current_node
 
             # Find the external tangent from next_node to the segway_node
-            tangent, segway_node = next_node.find_external_tangent_in_system(guide_direction, unvisited_nodes)
+            tangent, next_node = current_node.find_external_tangent_in_system(guide_direction, unvisited_nodes)
 
             # Setup guide direction from tangent
             guide_direction = tangent.direction
 
+            slice_curves.setdefault(current_node, SliceCurve(current_node)).extrapolate_end_point(tangent.normal)
+            slice_curves.setdefault(next_node, SliceCurve(next_node)).extrapolate_start_point(tangent.normal)
+
             # remove the next node from the unvisited nodes list
-            unvisited_nodes.remove(segway_node)
-
-            slice_curves[next_node].extrapolate_end_point(tangent.direction)
-            slice_curves[segway_node].extrapolate_start_point(tangent.direction)
-
-            # set up next node to be this iteration segway_node
-            next_node = segway_node
+            unvisited_nodes.remove(next_node)
 
             # Append the tangent to the tangential path list
             tangential_path.append(tangent)
+
+            # set up current node to be this iteration next_node
+            current_node = next_node
 
         for c, s in slice_curves.items():
             s.build_slicer_curve()
 
         for t in tangential_path:
             t.build_tangent_line()
-
 
 
 class SliceCurve:
@@ -101,10 +100,10 @@ class SliceCurve:
 
 class TangentLine:
     def __init__(self, circle_a, circle_b):
-        direction = circle_a.find_positive_external_tangent_direction(circle_b)
+        self.normal = circle_a.find_positive_external_tangent_normal(circle_b)
 
-        self.a = direction * circle_a.radius + circle_a.center
-        self.b = direction * circle_b.radius + circle_b.center
+        self.a = self.normal * circle_a.radius + circle_a.center
+        self.b = self.normal * circle_b.radius + circle_b.center
 
         base = self.b - self.a
 
@@ -118,13 +117,13 @@ class TangentLine:
 class Circle:
     def __init__(self, center: MVector = MVector.kZeroVector, radius: float = 1.0, name=""):
         if name:
-            self.load_transform_data(name)
+            self.build_circle_from_mobject(name)
         else:
             self.center: MVector = center
             self.radius: float = radius
             self.name = ""
 
-    def load_transform_data(self, name):
+    def build_circle_from_mobject(self, name):
         self.name = name
         self.center = MVector(cmds.getAttr(f"{self.name}.translate")[0])
         self.radius = abs(cmds.getAttr(f"{self.name}.scaleX"))
@@ -156,7 +155,8 @@ class Circle:
         return Circle(center + self.center,  center.length())
 
     def create_difference_circle(self, other):
-        return Circle(self.center, abs(self.radius - other.radius + 0.0001))
+        MIN_DIFF_VALUE = 0.0001
+        return Circle(self.center, max(abs(self.radius - other.radius), MIN_DIFF_VALUE))
 
     def find_external_tangent_in_system(self, start_direction: MVector, unvisited_nodes):
         """ This sub method build tangents across all the circles and returns the one with closer angle continuation from the start direction """
@@ -183,7 +183,7 @@ class Circle:
 
         return closest_tangent, closest_tangent_segway
 
-    def find_positive_external_tangent_direction(self, other) -> MVector:
+    def find_positive_external_tangent_normal(self, other) -> MVector:
         is_forward = self.radius > other.radius
         main_circle, target_circle = (self, other) if is_forward else (other, self)
 
@@ -192,18 +192,6 @@ class Circle:
         pos, neg   = bisector.find_intersection(difference)
 
         return ((pos if is_forward else neg) - main_circle.center).normal()
-
-        #main_tangent_intersection   = CircleIntersection(main_circle,   intersection_direction)
-        #target_tangent_intersection = CircleIntersection(target_circle, intersection_direction)
-
-        ## debug notes
-        #cmds.spaceLocator()
-        #cmds.move(*main_tangent_intersection.extrapolation)
-        #cmds.spaceLocator()
-        #cmds.move(*target_tangent_intersection.extrapolation)
-        #bisector.build_widget()
-        #difference.build_widget()
-        #return pos, neg
 
     def build_widget(self, name=""):
         if name:
