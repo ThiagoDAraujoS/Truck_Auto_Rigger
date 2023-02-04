@@ -655,16 +655,18 @@ class BeltRigBuilder:
     core_ctrl: text_field("Core", "Optional") = ""
     tread_mesh: text_field("Mesh", "Optional") = ""
 
-    torque: slider("Thread Speed", "Animation", 0.01)[float] = 3.0
-    acceleration: slider("Thread Speed", "Animation", 0.01)[float] = 3.0
+    # torque: slider("Thread Speed", "Animation", 0.01)[float] = 3.0
+    acceleration: slider("Acceleration", "Animation", 0.01)[float] = 3.0
+    torque: slider("Torque", "Animation", 0.01)[float] = 3.0
     is_left: toggle("Is Left", "Animation") = True
+
 
     def __init__(self):
         # noinspection PyTypeChecker
         self.belt_ctrl: BeltCurve = None
         self.frame_ctrl: str = ""
         self.master_joint: str = ""
-
+        self.curve_node = None
         self.circle_ctrls: list[str] = []
         self.tread_joints: list[str] = []
 
@@ -685,6 +687,13 @@ class BeltRigBuilder:
         cmds.setAttr(f"{self.core_ctrl}.overrideEnabled", 1)
         cmds.setAttr(f"{self.core_ctrl}.overrideShading", 0)
 
+        cmds.select(self.core_ctrl)
+        cmds.addAttr(shortName='ac', longName='acceleration', defaultValue=self.acceleration, minValue=0.001, maxValue=10000)
+        cmds.addAttr(shortName='tor', longName='torque', defaultValue=self.torque, minValue=0.001, maxValue=10000)
+
+        cmds.addAttr(shortName='for', longName='forward', defaultValue=0, minValue=-1, maxValue=1)
+        cmds.addAttr(shortName='spi', longName='spin', defaultValue=0, minValue=-1, maxValue=1)
+
     def destroy_core_ctrl(self):
         """ delete both the frame control and the core control widgets """
         cmds.delete(self.frame_ctrl, self.core_ctrl)
@@ -702,7 +711,7 @@ class BeltRigBuilder:
 
     def _build_circle_ctrl(self):
         """ Build a circle control """
-        ctrl = cmds.circle(name=BeltRigBuilder.CIRCLE_CTRL_NAME)[0]
+        ctrl = cmds.circle(name=f"{BeltRigBuilder.CIRCLE_CTRL_NAME}#")[0]
         cmds.scale(BeltRigBuilder.CIRCLE_CTRL_SIZE, BeltRigBuilder.CIRCLE_CTRL_SIZE, 0.0)
         for attribute in BeltRigBuilder.CIRCLE_CTRL_LOCK_BLUEPRINT:
             cmds.setAttr(f"{ctrl}.{attribute}", lock=True)
@@ -757,10 +766,10 @@ class BeltRigBuilder:
 
         cmds.setAttr(f"{distribute_node_name}.amplitudeX", 0)
 
-        curve_node = mash_network.addNode("MASH_Curve")
-        cmds.connectAttr(f"{self.belt_ctrl.name}.worldSpace[0]", f"{curve_node.name}.inCurves[0]", force=1)
-        cmds.setAttr(f"{curve_node.name}.timeStep", 1)
-        cmds.setAttr(f"{curve_node.name}.timeSlide", -self.acceleration)
+        self.curve_node = mash_network.addNode("MASH_Curve")
+        cmds.connectAttr(f"{self.belt_ctrl.name}.worldSpace[0]", f"{self.curve_node.name}.inCurves[0]", force=1)
+        cmds.setAttr(f"{self.curve_node.name}.timeStep", 1)
+        cmds.setAttr(f"{self.curve_node.name}.timeSlide", -self.acceleration)
 
         breakout_node = mash_network.addNode("MASH_Breakout")
         self._create_tread_joints()
@@ -780,6 +789,7 @@ class BeltRigBuilder:
         cmds.group(*threads, name=BeltRigBuilder.THREAD_MESH_GROUP_NAME)
 
     def clean_controls(self):
+        print(*self.circle_ctrls, self.belt_ctrl.name)
         cmds.parent(*self.circle_ctrls, self.belt_ctrl.name, w=True)
         cmds.delete(self.frame_ctrl)
         cmds.parent(*self.circle_ctrls, self.belt_ctrl.name)
@@ -787,12 +797,27 @@ class BeltRigBuilder:
         cmds.parentConstraint(self.core_ctrl, self.master_joint)
 
     def upgrade_controls(self):
-        cmds.select(self.core_ctrl)
-        cmds.addAttr(shortName='ac', longName='acceleration', defaultValue=self.acceleration, minValue=0.001, maxValue=10000)
-        cmds.addAttr(shortName='to', longName='torque', defaultValue=self.torque, minValue=0.001, maxValue=10000)
 
         cmds.select(self.belt_ctrl.name)
-        cmds.addAttr(shortName='dir', longName='direction', defaultValue=int(self.is_left), minValue=0, maxValue=1)
+        cmds.addAttr(shortName='dir', longName='direction', defaultValue=-1 if self.is_left else 1, minValue=-1, maxValue=1)
+
+        a_node, b_node, c_node = [cmds.createNode("multiplyDivide") for _ in range(3)]
+        d_node = cmds.createNode("plusMinusAverage")
+        cmds.setAttr(f"{d_node}.operation", 3)
+
+        # Acceleration * Forward
+        cmds.connectAttr(f"{self.core_ctrl}.acceleration", f"{c_node}.input1X")
+        cmds.connectAttr(f"{self.core_ctrl}.forward", f"{c_node}.input2X")
+        cmds.connectAttr(f"{c_node}.outputX", f"{d_node}.input1D[0]")
+
+        cmds.connectAttr(f"{self.core_ctrl}.spin", f"{a_node}.input1X")
+        cmds.connectAttr(f"{self.belt_ctrl.name}.direction", f"{a_node}.input2X")
+        cmds.connectAttr(f"{a_node}.outputX", f"{b_node}.input1X")
+        cmds.connectAttr(f"{self.core_ctrl}.torque", f"{b_node}.input2X")
+        cmds.connectAttr(f"{b_node}.outputX", f"{d_node}.input1D[1]")
+        cmds.connectAttr(f"{d_node}.output1D", f"{self.curve_node.name}.timeSlide")
+
+
 
     def finish(self):
         self.build_belt_ctrl()
