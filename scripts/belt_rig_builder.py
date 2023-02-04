@@ -115,8 +115,8 @@ class Window:
                 position_wheels_state()
 
             def on_apply(*_):
-                self.belt_tool_ref.build_belt_ctrl()
-                self.belt_tool_ref.build_mash_driver()
+                self.belt_tool_ref.finish()
+
                 enable_tuning_panel(True)
                 starting_state()
 
@@ -131,81 +131,6 @@ class Window:
             cmds.rowLayout(numberOfColumns=2, columnAlign2=["right", "left"], co2=[-1, -1])
             cmds.button(label="Reset", c=on_reset, w=64, h=62, bgc=Window.UI_RED)
             cmds.button(label="Back", c=on_back, w=63, h=62, bgc=Window.UI_BGC)
-
-        # -----------------------------------------------------------------------------------------------------------------------------------------------------------------
-        root_element = cmds.columnLayout(bgc=Window.UI_LIGHT_GRAY, columnAttach=('both', 0), adjustableColumn=True, )
-        starting_state()
-        cmds.setParent("..")
-        return root_element
-
-    def arm_control_box_widget(self, print_message, show_icon, enable_tuning_panel):
-        """ Creates a custom 'arm rigger widget' that serves as state machine and controls other widgets' features """
-
-        def state(message="", icon=""):
-            def inner(function):
-                def wrapper(*args, **kwargs):
-                    if message:
-                        print_message(message)
-                    if icon:
-                        show_icon(icon)
-                    cmds.setParent(root_element)
-                    children = cmds.columnLayout(root_element, query=True, childArray=True)
-                    if children:
-                        cmds.deleteUI(children)
-                    function(*args, **kwargs)
-
-                return wrapper
-
-            return inner
-
-        # -------------------------------------------------------------STARTING STATE-------------------------------------------------------------------------------------
-        @state(" - Welcome!\n - Press the [Start Building Rig] button to start\n   building your arm rig.", "PxrPtexture.svg")
-        def starting_state():
-            def on_kickstart_tool(*_):
-                enable_tuning_panel(False)
-                setup_loc_state()
-                self.bucket_tool_ref.create_locator()
-
-            cmds.button(label="Start Building Rig", c=on_kickstart_tool, h=127, bgc=Window.UI_GREEN)
-
-        # ------------------------------------------------------------------SETUP LOC STATE--------------------------------------------------------------------------------
-        @state(" - I have created some locators.\n - Please move them in the arm's joint positions.\n   In order from the base to the end of the arm", "breakTangent.png")
-        def setup_loc_state():
-            def on_reset(*_):
-                self.bucket_tool_ref.reset_locator()
-                self.bucket_tool_ref.create_locator()
-                setup_loc_state()
-
-            def on_apply(*_):
-                self.bucket_tool_ref.bake_locator_position()
-                self.bucket_tool_ref.create_joints()
-                setup_ik_state()
-
-            def on_cancel(*_):
-                self.bucket_tool_ref.reset_locator()
-                enable_tuning_panel(True)
-                starting_state()
-
-            cmds.rowLayout(numberOfColumns=1)
-            cmds.button(label="Accept", c=on_apply, w=129, h=63, bgc=Window.UI_GREEN)
-            cmds.setParent("..")
-            cmds.rowLayout(numberOfColumns=2, columnAlign2=["right", "left"], co2=[-1, -1])
-            cmds.button(label="Reset", c=on_reset, w=64, h=62, bgc=Window.UI_RED)
-            cmds.button(label="Cancel", c=on_cancel, w=63, h=62, bgc=Window.UI_BGC)
-
-        # ---------------------------------------------------------SETUP IK STATE-------------------------------------------------------------------------------------------
-        @state(" - Select 2 Joints from the base to the end of the\n   arm in order to build an IK Control", "breakTangent.png")
-        def setup_ik_state():
-            def on_build_ik(*_):
-                self.bucket_tool_ref.create_ik_controllers()
-
-            def on_finish(*_):
-                enable_tuning_panel(True)
-                starting_state()
-
-            cmds.button(label="Build IK", c=on_build_ik, w=120, h=62, bgc=Window.UI_BLUE)
-            cmds.separator()
-            cmds.button(label="Finish", c=on_finish, w=120, h=62, bgc=Window.UI_GREEN)
 
         # -----------------------------------------------------------------------------------------------------------------------------------------------------------------
         root_element = cmds.columnLayout(bgc=Window.UI_LIGHT_GRAY, columnAttach=('both', 0), adjustableColumn=True, )
@@ -712,21 +637,27 @@ class BeltRigBuilder:
     CIRCLE_CTRL_NAME: str = "Belt_Circle_Ctrl"
 
     FRAME_CTRL_NAME: str = "Belt_Frame_Ctrl"
-    FRAME_CTRL_SIZE: float = 80.0
+    FRAME_CTRL_WIDTH: float = 160.0
+    FRAME_CTRL_HEIGHT: float = 80.0
     FRAME_CTRL_LOCK_BLUEPRINT: list[str] = "scale", "rotate", "translate"
 
+    THREAD_MESH_GROUP_NAME = "Thread_Mesh_#"
     THREAD_JOINT_NAME_PREFIX: str = "Belt_Thread"
     MASTER_JOINT_NAME_PREFIX: str = "Belt_Master"
     JOINT_NAME_SUFFIX: str = "Joint"
 
     MASH_NETWORK_NAME: str = "MASH_Belt_Thread_Driver"
-    MASH_BREAKOUT_CONNECTION_BLUEPRINT: list[tuple[str, str]] = [(".outputs[{i}].translate", ".translate")]  # , "outputs[{i}].rotate"
+    MASH_BREAKOUT_CONNECTION_BLUEPRINT: list[tuple[str, str]] = [(".outputs[{i}].translate", ".translate"), (".outputs[{i}].rotate", ".rotate")]
 
     tread_count: slider("Thread Count", "Setup", 10, 100)[int] = 30
     circle_ctrl_count: slider("Wheel Count", "Setup", 2, 12)[int] = 5
-    animation_speed: slider("Thread Speed", "Setup")[float] = 3.0
 
-    core_ctrl: text_field("Prev Core, Optional") = ""
+    core_ctrl: text_field("Core", "Optional") = ""
+    tread_mesh: text_field("Mesh", "Optional") = ""
+
+    torque: slider("Thread Speed", "Animation", 0.01)[float] = 3.0
+    acceleration: slider("Thread Speed", "Animation", 0.01)[float] = 3.0
+    is_left: toggle("Is Left", "Animation") = True
 
     def __init__(self):
         # noinspection PyTypeChecker
@@ -739,8 +670,9 @@ class BeltRigBuilder:
 
     def build_core_ctrl(self):
         """ Builds a square frame used as base screen for drawing the belt's controls """
-        self.frame_ctrl = cmds.polyPlane(name=f"{BeltRigBuilder.FRAME_CTRL_NAME}#", h=BeltRigBuilder.FRAME_CTRL_SIZE,
-            w=BeltRigBuilder.FRAME_CTRL_SIZE, sh=1, sw=1, sx=1, sy=1, ax=MVector.kZaxisVector)[0]
+        self.frame_ctrl = cmds.polyPlane(name=f"{BeltRigBuilder.FRAME_CTRL_NAME}#", h=BeltRigBuilder.FRAME_CTRL_HEIGHT,
+            w=BeltRigBuilder.FRAME_CTRL_WIDTH, sh=1, sw=1, sx=1, sy=1, ax=MVector.kZaxisVector)[0]
+        cmds.move(0, BeltRigBuilder.FRAME_CTRL_HEIGHT * 0.5, BeltRigBuilder.CIRCLE_CTRL_SPACING)
         cmds.setAttr(f"{self.frame_ctrl}.overrideEnabled", 1)
         cmds.setAttr(f"{self.frame_ctrl}.overrideShading", 0)
 
@@ -749,6 +681,7 @@ class BeltRigBuilder:
 
         # build a core control box
         self.core_ctrl = cmds.polyCube(name=BeltRigBuilder.CORE_CTRL_NAME, h=BeltRigBuilder.CORE_CTRL_SIZE, w=BeltRigBuilder.CORE_CTRL_SIZE, d=BeltRigBuilder.CORE_CTRL_SIZE)[0]
+        cmds.move(0, BeltRigBuilder.CORE_CTRL_SIZE * 0.5, 0)
         cmds.setAttr(f"{self.core_ctrl}.overrideEnabled", 1)
         cmds.setAttr(f"{self.core_ctrl}.overrideShading", 0)
 
@@ -780,7 +713,7 @@ class BeltRigBuilder:
         self.circle_ctrls = []
         for i in range(self.circle_ctrl_count):
             ctrl = self._build_circle_ctrl()
-            cmds.move(*(MVector.kXaxisVector * i * BeltRigBuilder.CIRCLE_CTRL_SPACING))
+            cmds.move(*(MVector.kXaxisVector * (i * BeltRigBuilder.CIRCLE_CTRL_SPACING - BeltRigBuilder.FRAME_CTRL_WIDTH * 0.5)))
             self.circle_ctrls.append(ctrl)
         cmds.parent(*self.circle_ctrls, self.frame_ctrl, r=True)
 
@@ -827,7 +760,7 @@ class BeltRigBuilder:
         curve_node = mash_network.addNode("MASH_Curve")
         cmds.connectAttr(f"{self.belt_ctrl.name}.worldSpace[0]", f"{curve_node.name}.inCurves[0]", force=1)
         cmds.setAttr(f"{curve_node.name}.timeStep", 1)
-        cmds.setAttr(f"{curve_node.name}.timeSlide", -self.animation_speed)
+        cmds.setAttr(f"{curve_node.name}.timeSlide", -self.acceleration)
 
         breakout_node = mash_network.addNode("MASH_Breakout")
         self._create_tread_joints()
@@ -835,8 +768,38 @@ class BeltRigBuilder:
             for connection_a, connection_b in BeltRigBuilder.MASH_BREAKOUT_CONNECTION_BLUEPRINT:
                 cmds.connectAttr((f"{breakout_node.name}{connection_a}").format(i=i), f"{joint}{connection_b}")
 
+    def copy_thread_mesh(self):
+        threads = []
+        if self.tread_mesh:
+            for joint in self.tread_joints:
+                new_thread = cmds.duplicate(self.tread_mesh, renameChildren=True)[0]
+                threads.append(new_thread)
+                cmds.matchTransform(new_thread, joint, scale=False)
+                cmds.select(new_thread, joint)
+                cmds.skinCluster(new_thread, joint, tsb=True)
+        cmds.group(*threads, name=BeltRigBuilder.THREAD_MESH_GROUP_NAME)
+
+    def clean_controls(self):
+        cmds.parent(*self.circle_ctrls, self.belt_ctrl.name, w=True)
+        cmds.delete(self.frame_ctrl)
+        cmds.parent(*self.circle_ctrls, self.belt_ctrl.name)
+        cmds.parent(self.belt_ctrl.name, self.core_ctrl)
+        cmds.parentConstraint(self.core_ctrl, self.master_joint)
+
+    def upgrade_controls(self):
+        cmds.select(self.core_ctrl)
+        cmds.addAttr(shortName='ac', longName='acceleration', defaultValue=self.acceleration, minValue=0.001, maxValue=10000)
+        cmds.addAttr(shortName='to', longName='torque', defaultValue=self.torque, minValue=0.001, maxValue=10000)
+
+        cmds.select(self.belt_ctrl.name)
+        cmds.addAttr(shortName='dir', longName='direction', defaultValue=int(self.is_left), minValue=0, maxValue=1)
+
     def finish(self):
-        cmds.parent(self.master_joint, self.belt_ctrl.name, self.frame_ctrl, r=True)
+        self.build_belt_ctrl()
+        self.build_mash_driver()
+        self.copy_thread_mesh()
+        self.clean_controls()
+        self.upgrade_controls()
 
 
 belt_rig_tool = BeltRigBuilder()
