@@ -48,17 +48,14 @@ class Window:
         """ Creates a custom 'chain rigger widget' that serves as control for other widgets' features """
 
         def on_has_mesh(*_):
-            print("has mesh")
-            self.chain_tool_ref.duplicate_mesh()
+            self.chain_tool_ref.build_mesh()
 
         def on_has_curve(*_):
-            print("has curve")
             self.chain_tool_ref.build_curve()
-            self.chain_tool_ref.get_mesh_input(on_success=on_has_mesh, on_error=lambda name, *_: print_message(f" - Chain Ring '{name}' mesh not found"))
+            self.chain_tool_ref.get_mesh_input(on_success=on_has_mesh, on_error=lambda name, *_: print_message(f" - Chain Ring mesh not found"))
 
         def on_kickstart_tool(*_):
-            print("tool started")
-            self.chain_tool_ref.get_curve_input(on_success=on_has_curve, on_error=lambda name, *_: print_message(f" - Curve '{name}' Reference not found"))
+            self.chain_tool_ref.get_curve_input(on_success=on_has_curve, on_error=lambda name, *_: print_message(f" - Curve Reference not found"))
 
         root_element = cmds.columnLayout(bgc=Window.UI_LIGHT_GRAY, columnAttach=('both', 0), adjustableColumn=True)
         print_message(" - Write your curve and mesh name in the UI then press Start rig button.")
@@ -320,11 +317,68 @@ class CurveRig:
     """ Curve Smooth intensity """
 
     def __init__(self):
-        self.locator_group = ""
+        self._locator_group = ""
         """ Locator group mobject name reference """
 
-        self.locator_list = []
+        self._locator_list = []
         """ Locator mobject names reference list"""
+
+    def get_mesh_input(self, on_success = None, on_error = None):
+        """ get mesh input or selected mesh """
+        self.mesh_name = self._get_abstract_input("mesh", self.mesh_name, on_error=on_error, on_success=on_success)
+
+    def get_curve_input(self, on_success = None, on_error = None):
+        """ Get curve input or selected curve """
+        self.curve_name = self._get_abstract_input("nurbsCurve", self.curve_name, on_error=on_error, on_success=on_success)
+
+    def build_mesh(self):
+        """ Replicate chain's mesh """
+        print(self.mesh_name)
+        mesh = []
+        for locator_name in self._locator_list:
+            cmds.select(self.mesh_name)
+            mesh.append(cmds.duplicate()[0])
+            cmds.select(locator_name, add=True)
+            cmds.matchTransform()
+            cmds.parentConstraint(w=1)
+        cmds.group(mesh, name=self.mesh_group_name)
+
+    def build_curve(self):
+        """ Build the curve """
+        self._resample_curve()
+        if self.smooth_intensity > 0:
+            self._smooth_curve()
+        self._create_locators()
+
+    def _clear_locator_group(self):
+        """ Delete all the locators in the locator group """
+        if cmds.objExists(self._locator_group):
+            cmds.delete(self._locator_group)
+            self._locator_group = []
+            self.locator_name = ""
+
+    def _resample_curve(self):
+        """ Resample curve """
+        new_curve = cmds.rebuildCurve(self.curve_name, rpo=not self.keep_original_curve, s=self.curve_points_count, kep=True, rt=0, d=3, ch=False, n=f"{self.curve_name}_Rebuilt")[0]
+
+        if self.keep_original_curve:
+            cmds.delete(self.curve_name)
+
+        self.curve_name = new_curve
+
+    def _create_locators(self):
+        """ Create locators """
+        self._clear_locator_group()
+
+        curve_point_names = cmds.ls(self.curve_name + ".ep[*]", fl=True)
+        self._locator_list = []
+        for point_name in curve_point_names:
+            cmds.select(point_name, r=True)
+            cmds.pointCurveConstraint()
+            cmds.CenterPivot()
+            self._locator_list.append(cmds.rename(f"{self.locator_name}#"))
+        cmds.select(self._locator_list)
+        self._locator_group = cmds.group(n=f"{self.locator_name}_{self.locator_group_name}")
 
     def _get_abstract_input(self, type_name, default_name, on_error, on_success):
         """ Check if referred name exists and is of the chosen type, if not check for the selected mobject """
@@ -352,63 +406,9 @@ class CurveRig:
                 on_success()
             return new_selected_object
 
-    def get_mesh_input(self, on_success = None, on_error = None):
-        self.mesh_name = self._get_abstract_input("mesh", self.mesh_name, on_error=on_error, on_success=on_success)
-
-    def get_curve_input(self, on_success = None, on_error = None):
-        self.curve_name = self._get_abstract_input("nurbsCurve", self.curve_name, on_error=on_error, on_success=on_success)
-
-    def resample_curve(self):
-        """ Resample curve """
-        new_curve = cmds.rebuildCurve(self.curve_name, rpo=not self.keep_original_curve, s=self.curve_points_count, kep=True, rt=0, d=3, ch=False, n=f"{self.curve_name}_Rebuilt")[0]
-
-        if self.keep_original_curve:
-            cmds.delete(self.curve_name)
-
-        self.curve_name = new_curve
-
-    def create_locators(self):
-        """ Create locators """
-        self.clear_locator_group()
-
-        curve_point_names = cmds.ls(self.curve_name + ".ep[*]", fl=True)
-        self.locator_list = []
-        for point_name in curve_point_names:
-            cmds.select(point_name, r=True)
-            cmds.pointCurveConstraint()
-            cmds.CenterPivot()
-            self.locator_list.append(cmds.rename(f"{self.locator_name}#"))
-        cmds.select(self.locator_list)
-        self.locator_group = cmds.group(n=f"{self.locator_name}_{self.locator_group_name}")
-
-    def clear_locator_group(self):
-        """ Delete all the locators in the locator group """
-        if cmds.objExists(self.locator_group):
-            cmds.delete(self.locator_group)
-            self.locator_group = []
-            self.locator_name = ""
-
-    def smooth_curve(self):
+    def _smooth_curve(self):
         """ Smooth the curve """
         cmds.smoothCurve(self.curve_name + ".cv[*]", s=self.smooth_intensity, ch=False)
-
-    def duplicate_mesh(self):
-        """ Replicate chain's mesh """
-        print(self.mesh_name)
-        mesh = []
-        for locator_name in self.locator_list:
-            cmds.select(self.mesh_name)
-            mesh.append(cmds.duplicate()[0])
-            cmds.select(locator_name, add=True)
-            cmds.matchTransform()
-            cmds.parentConstraint(w=1)
-        cmds.group(mesh, name=self.mesh_group_name)
-
-    def build_curve(self):
-        self.resample_curve()
-        if self.smooth_intensity > 0:
-            self.smooth_curve()
-        self.create_locators()
 
 
 tool = CurveRig()
