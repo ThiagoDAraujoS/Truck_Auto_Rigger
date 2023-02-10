@@ -333,7 +333,6 @@ class CurveRig:
 
     def build_mesh(self):
         """ Replicate chain's mesh """
-        print(self.mesh_name)
         mesh = []
         for locator_name in self._locator_list:
             cmds.select(self.mesh_name)
